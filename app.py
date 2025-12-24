@@ -5,8 +5,9 @@ import httpx
 import asyncio
 from typing import Dict, Any
 import json
-from utils import load_amazon_fdb, sample_transaction
+from utils import load_ieee_fraud_detection, sample_transaction, map_ieee_to_transaction, is_ieee_format
 from schemas import Transaction
+import config
 
 
 # Page configuration
@@ -66,11 +67,11 @@ if mode == "Single Transaction Analysis":
     with col1:
         st.subheader("Transaction Input")
         
-        # Load dataset for random sampling
-        if st.button("Load Dataset (for random sampling)"):
+        # Load IEEE Fraud Detection dataset for random sampling
+        if st.button("Load IEEE Fraud Detection Dataset"):
             try:
-                with st.spinner("Loading dataset..."):
-                    df = load_amazon_fdb()
+                with st.spinner("Loading IEEE Fraud Detection dataset..."):
+                    df = load_ieee_fraud_detection()
                     st.session_state.dataset = df
                     st.session_state.dataset_loaded = True
                     st.success(f"Dataset loaded: {len(df)} transactions")
@@ -180,21 +181,24 @@ else:  # Batch Simulation Mode
     
     with col1:
         st.subheader("Load Dataset")
-        uploaded_file = st.file_uploader("Upload CSV file", type=["csv"])
+        uploaded_file = st.file_uploader("Upload IEEE Fraud Detection CSV file", type=["csv"], help="Upload IEEE format CSV (should contain TransactionID, TransactionDT, TransactionAmt, etc.)")
         
         if uploaded_file is not None:
             try:
                 df = pd.read_csv(uploaded_file)
+                # Validate IEEE format
+                if not is_ieee_format(df):
+                    st.warning("⚠️ Uploaded file may not be in IEEE format. Expected columns: TransactionID, TransactionDT, TransactionAmt, isFraud")
                 st.session_state.dataset = df
                 st.session_state.dataset_loaded = True
                 st.success(f"Dataset loaded: {len(df)} transactions")
             except Exception as e:
                 st.error(f"Error loading file: {str(e)}")
         else:
-            if st.button("Load Default Dataset"):
+            if st.button("Load IEEE Fraud Detection Dataset"):
                 try:
-                    with st.spinner("Loading dataset..."):
-                        df = load_amazon_fdb()
+                    with st.spinner("Loading IEEE Fraud Detection dataset..."):
+                        df = load_ieee_fraud_detection()
                         st.session_state.dataset = df
                         st.session_state.dataset_loaded = True
                         st.success(f"Dataset loaded: {len(df)} transactions")
@@ -228,16 +232,10 @@ else:  # Batch Simulation Mode
         # Sample transactions
         sample_df = df.sample(n=min(num_transactions, len(df)), replace=False)
         
-        # Prepare transaction data
+        # Prepare transaction data - convert IEEE format to Transaction schema
         transactions = []
         for _, row in sample_df.iterrows():
-            txn = {
-                "user_id": str(row.get("user_id", "unknown")),
-                "transaction_amount": float(row.get("transaction_amount", 0.0)),
-                "ip_address": str(row.get("ip_address", "0.0.0.0")),
-                "device_id": str(row.get("device_id", "unknown")),
-                "timestamp": str(row.get("timestamp", "")),
-            }
+            txn = map_ieee_to_transaction(row)
             transactions.append(txn)
         
         # Process batch

@@ -109,7 +109,17 @@ Do not include any explanatory text, markdown formatting, or code blocks. Return
 
 async def identity_agent_node(state: AgentState) -> AgentState:
     """Identity Agent: Analyzes IP and Device risk."""
-    transaction_data = state["transaction_data"]
+    transaction_data = state.get("transaction_data", {})
+    
+    # Validate required fields
+    required_fields = ["user_id", "ip_address", "device_id", "timestamp"]
+    missing_fields = [field for field in required_fields if field not in transaction_data or transaction_data[field] is None]
+    if missing_fields:
+        return {
+            **state,
+            "error": f"Identity agent error: Missing required transaction data fields: {', '.join(missing_fields)}",
+            "identity_output": None
+        }
     
     system_prompt = "You are a fraud detection agent specializing in identity verification."
     
@@ -134,12 +144,22 @@ Return a JSON object with:
         output = await call_groq_structured(prompt, IdentityAgentOutput, system_prompt)
         return {**state, "identity_output": output}
     except Exception as e:
-        return {**state, "error": f"Identity agent error: {str(e)}"}
+        return {**state, "error": f"Identity agent error: {str(e)}", "identity_output": None}
 
 
 async def behavioral_agent_node(state: AgentState) -> AgentState:
     """Behavioral Agent: Analyzes transaction frequency and amount deviations."""
-    transaction_data = state["transaction_data"]
+    transaction_data = state.get("transaction_data", {})
+    
+    # Validate required fields
+    required_fields = ["user_id", "transaction_amount", "timestamp"]
+    missing_fields = [field for field in required_fields if field not in transaction_data or transaction_data[field] is None]
+    if missing_fields:
+        return {
+            **state,
+            "error": f"Behavioral agent error: Missing required transaction data fields: {', '.join(missing_fields)}",
+            "behavioral_output": None
+        }
     
     system_prompt = "You are a fraud detection agent specializing in behavioral pattern analysis."
     
@@ -164,7 +184,7 @@ Return a JSON object with:
         output = await call_groq_structured(prompt, BehavioralAgentOutput, system_prompt)
         return {**state, "behavioral_output": output}
     except Exception as e:
-        return {**state, "error": f"Behavioral agent error: {str(e)}"}
+        return {**state, "error": f"Behavioral agent error: {str(e)}", "behavioral_output": None}
 
 
 async def parallel_agents_node(state: AgentState) -> AgentState:
@@ -180,24 +200,25 @@ async def parallel_agents_node(state: AgentState) -> AgentState:
     
     # Handle exceptions
     if isinstance(identity_state, Exception):
-        identity_state = {**state, "error": f"Identity agent exception: {str(identity_state)}"}
+        identity_state = {**state, "error": f"Identity agent exception: {str(identity_state)}", "identity_output": None}
     if isinstance(behavioral_state, Exception):
-        behavioral_state = {**state, "error": f"Behavioral agent exception: {str(behavioral_state)}"}
+        behavioral_state = {**state, "error": f"Behavioral agent exception: {str(behavioral_state)}", "behavioral_output": None}
     
-    # Merge results
+    # Merge results - always update outputs to ensure state is properly updated
     merged_state = {**state}
-    if "identity_output" in identity_state:
-        merged_state["identity_output"] = identity_state["identity_output"]
-    if "behavioral_output" in behavioral_state:
-        merged_state["behavioral_output"] = behavioral_state["behavioral_output"]
-    if "error" in identity_state:
-        merged_state["error"] = identity_state.get("error")
-    if "error" in behavioral_state:
-        error_msg = behavioral_state.get("error", "")
-        if merged_state.get("error"):
-            merged_state["error"] += f"; {error_msg}"
-        else:
-            merged_state["error"] = error_msg
+    # Always update outputs from agent states (even if None) to ensure proper state tracking
+    merged_state["identity_output"] = identity_state.get("identity_output")
+    merged_state["behavioral_output"] = behavioral_state.get("behavioral_output")
+    
+    # Merge errors
+    errors = []
+    if identity_state.get("error"):
+        errors.append(identity_state["error"])
+    if behavioral_state.get("error"):
+        errors.append(behavioral_state["error"])
+    
+    if errors:
+        merged_state["error"] = "; ".join(errors)
     
     return merged_state
 
@@ -206,11 +227,22 @@ async def scoring_agent_node(state: AgentState) -> AgentState:
     """Scoring Agent: Aggregates results and produces final fraud score."""
     identity_output = state.get("identity_output")
     behavioral_output = state.get("behavioral_output")
+    error = state.get("error")
     
     if not identity_output or not behavioral_output:
+        missing = []
+        if not identity_output:
+            missing.append("identity_output")
+        if not behavioral_output:
+            missing.append("behavioral_output")
+        
+        error_msg = f"Missing required agent outputs for scoring: {', '.join(missing)}"
+        if error:
+            error_msg += f". Previous errors: {error}"
+        
         return {
             **state,
-            "error": "Missing required agent outputs for scoring",
+            "error": error_msg,
             "scoring_output": None
         }
     

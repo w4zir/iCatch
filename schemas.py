@@ -5,18 +5,18 @@ from datetime import datetime
 
 
 class Transaction(BaseModel):
-    """Transaction input schema matching Amazon FDB format."""
-    user_id: str = Field(..., description="Unique user identifier")
+    """Transaction input schema matching IEEE Fraud Detection dataset format."""
+    user_id: str = Field(..., description="Unique user identifier (TransactionID from IEEE dataset)")
     transaction_amount: float = Field(..., description="Transaction amount in currency units")
-    ip_address: str = Field(..., description="IP address of the transaction")
-    device_id: str = Field(..., description="Device identifier")
-    timestamp: str = Field(..., description="Transaction timestamp")
+    ip_address: str = Field(..., description="IP address of the transaction (derived from addr1/addr2)")
+    device_id: str = Field(..., description="Device identifier (from DeviceInfo or DeviceType)")
+    timestamp: str = Field(..., description="Transaction timestamp (ISO format)")
     
-    # Additional fields that may exist in Amazon FDB
-    payment_method: Optional[str] = None
-    billing_address: Optional[str] = None
+    # Additional fields from IEEE dataset
+    payment_method: Optional[str] = Field(None, description="Payment method (card4 from IEEE dataset)")
+    billing_address: Optional[str] = Field(None, description="Billing address (derived from addr1)")
     shipping_address: Optional[str] = None
-    product_category: Optional[str] = None
+    product_category: Optional[str] = Field(None, description="Product category (ProductCD from IEEE dataset)")
     
     class Config:
         json_schema_extra = {

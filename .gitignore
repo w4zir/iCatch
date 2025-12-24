@@ -106,3 +106,5 @@ config.local.py
 *.key
 *.pem
 
+# data files and folders
+data/

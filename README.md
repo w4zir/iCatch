@@ -1,6 +1,6 @@
 # Sentinel-MAS: Multi-Agent Fraud Detection System
 
-A high-speed, multi-agent system designed to identify fraudulent transactions within the Amazon Fraud Dataset Benchmark (FDB) using parallel reasoning.
+A high-speed, multi-agent system designed to identify fraudulent transactions within the IEEE Fraud Detection dataset using parallel reasoning.
 
 ## Features
 
