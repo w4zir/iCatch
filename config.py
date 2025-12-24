@@ -27,7 +27,7 @@ def resolve_data_path(path: str) -> str:
 
 # Groq API Configuration
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama3-8b-8192")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 
 # Performance Settings
 TIMEOUT_SECONDS = float(os.getenv("TIMEOUT_SECONDS", "3.0"))

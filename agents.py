@@ -104,7 +104,18 @@ Do not include any explanatory text, markdown formatting, or code blocks. Return
     except ValidationError as e:
         raise ValueError(f"Response validation failed: {str(e)}")
     except Exception as e:
-        raise ValueError(f"Groq API error: {str(e)}")
+        # Check for authentication errors
+        error_str = str(e)
+        if "401" in error_str or "invalid_api_key" in error_str.lower() or "Invalid API Key" in error_str:
+            raise ValueError(
+                f"Groq API authentication failed. Please check your GROQ_API_KEY in the .env file. "
+                f"Error: {error_str}. "
+                f"Get your API key from https://console.groq.com/keys"
+            )
+        elif "429" in error_str or "rate limit" in error_str.lower():
+            raise ValueError(f"Groq API rate limit exceeded: {error_str}")
+        else:
+            raise ValueError(f"Groq API error: {error_str}")
 
 
 async def identity_agent_node(state: AgentState) -> AgentState:
