@@ -15,9 +15,61 @@ from schemas import (
     AgentTrace,
 )
 
+# Optional trace logging (only import if enabled to avoid circular imports)
+_trace_utils_available = False
+try:
+    from trace_utils import log_trace
+    _trace_utils_available = True
+except ImportError:
+    pass
 
-# Initialize Groq client
-groq_client = Groq(api_key=config.GROQ_API_KEY)
+
+# Initialize Groq client (only if API is enabled)
+groq_client = None
+if config.USE_GROQ_API:
+    groq_client = Groq(api_key=config.GROQ_API_KEY)
+
+
+def _generate_mock_response(output_schema: type[BaseModel], call_name: str) -> Dict[str, Any]:
+    """
+    Generate mock response data based on the output schema type.
+    
+    Args:
+        output_schema: Pydantic model for expected output
+        call_name: Identifier for the API call (for context)
+        
+    Returns:
+        Dictionary with mock data matching the schema
+    """
+    schema_name = output_schema.__name__
+    
+    if schema_name == "IdentityAgentOutput":
+        return {
+            "ip_risk_score": 0.25,
+            "device_risk_score": 0.15,
+            "reasoning": f"[MOCK] Identity analysis: IP and device patterns appear normal. Low risk indicators detected."
+        }
+    elif schema_name == "BehavioralAgentOutput":
+        return {
+            "frequency_anomaly_score": 0.20,
+            "amount_deviation_score": 0.30,
+            "reasoning": f"[MOCK] Behavioral analysis: Transaction frequency and amount are within normal user patterns."
+        }
+    elif schema_name == "ScoringAgentOutput":
+        # Calculate a mock fraud score based on typical values
+        fraud_score = 0.22  # Low risk score
+        decision = "approve" if fraud_score < 0.5 else "deny"
+        return {
+            "fraud_score": fraud_score,
+            "decision": decision,
+            "reasoning": f"[MOCK] Scoring analysis: Combined risk assessment indicates low fraud probability. Transaction {decision}d."
+        }
+    else:
+        # Generic fallback - try to create minimal valid response
+        # This should not happen with current schemas, but provides safety
+        return {
+            "reasoning": f"[MOCK] Mock response for {schema_name}"
+        }
 
 
 class AgentState(TypedDict):
@@ -34,6 +86,7 @@ async def call_groq_structured(
     prompt: str,
     output_schema: type[BaseModel],
     system_prompt: str = "",
+    call_name: str = "Unknown",
 ) -> BaseModel:
     """
     Call Groq API with structured JSON output.
@@ -42,6 +95,7 @@ async def call_groq_structured(
         prompt: User prompt for the agent
         output_schema: Pydantic model for expected output
         system_prompt: System prompt (kept concise for speed)
+        call_name: Identifier for the API call (e.g., "Identity Agent", "Behavioral Agent")
         
     Returns:
         Validated Pydantic model instance
@@ -49,6 +103,17 @@ async def call_groq_structured(
     Raises:
         ValueError: If response cannot be parsed or validated
     """
+    api_start = time.time()
+    
+    # Bypass Groq API if flag is disabled (for testing)
+    if not config.USE_GROQ_API:
+        # Generate mock response based on schema type
+        mock_data = _generate_mock_response(output_schema, call_name)
+        result = output_schema(**mock_data)
+        total_time = (time.time() - api_start) * 1000
+        print(f"[MOCK API] {call_name} - Total: {total_time:.0f}ms (bypassed Groq API)")
+        return result
+    
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -69,6 +134,7 @@ Do not include any explanatory text, markdown formatting, or code blocks. Return
         messages[-1]["content"] = json_prompt
         
         # Try with response_format first (if supported), fallback without it
+        request_start = time.time()
         try:
             response = groq_client.chat.completions.create(
                 model=config.GROQ_MODEL,
@@ -83,6 +149,7 @@ Do not include any explanatory text, markdown formatting, or code blocks. Return
                 messages=messages,
                 temperature=0.1,
             )
+        request_time = (time.time() - request_start) * 1000
         
         content = response.choices[0].message.content.strip()
         
@@ -96,8 +163,15 @@ Do not include any explanatory text, markdown formatting, or code blocks. Return
         content = content.strip()
         
         # Parse and validate
+        parse_start = time.time()
         data = json.loads(content)
-        return output_schema(**data)
+        result = output_schema(**data)
+        parse_time = (time.time() - parse_start) * 1000
+        
+        total_time = (time.time() - api_start) * 1000
+        print(f"[GROQ API] {call_name} - Total: {total_time:.0f}ms (request: {request_time:.0f}ms, parse: {parse_time:.0f}ms)")
+        
+        return result
         
     except json.JSONDecodeError as e:
         raise ValueError(f"Failed to parse JSON response: {str(e)}")
@@ -152,7 +226,7 @@ Return a JSON object with:
 - reasoning: brief explanation of your assessment"""
     
     try:
-        output = await call_groq_structured(prompt, IdentityAgentOutput, system_prompt)
+        output = await call_groq_structured(prompt, IdentityAgentOutput, system_prompt, call_name="Identity Agent")
         return {**state, "identity_output": output}
     except Exception as e:
         return {**state, "error": f"Identity agent error: {str(e)}", "identity_output": None}
@@ -192,7 +266,7 @@ Return a JSON object with:
 - reasoning: brief explanation of your assessment"""
     
     try:
-        output = await call_groq_structured(prompt, BehavioralAgentOutput, system_prompt)
+        output = await call_groq_structured(prompt, BehavioralAgentOutput, system_prompt, call_name="Behavioral Agent")
         return {**state, "behavioral_output": output}
     except Exception as e:
         return {**state, "error": f"Behavioral agent error: {str(e)}", "behavioral_output": None}
@@ -282,7 +356,7 @@ Return a JSON object with:
 - reasoning: comprehensive explanation of your decision"""
     
     try:
-        output = await call_groq_structured(prompt, ScoringAgentOutput, system_prompt)
+        output = await call_groq_structured(prompt, ScoringAgentOutput, system_prompt, call_name="Scoring Agent")
         return {**state, "scoring_output": output}
     except Exception as e:
         return {**state, "error": f"Scoring agent error: {str(e)}", "scoring_output": None}
@@ -322,12 +396,13 @@ def create_fraud_detection_graph():
     return workflow.compile()
 
 
-async def analyze_transaction(transaction: Transaction) -> AgentTrace:
+async def analyze_transaction(transaction: Transaction, timeout: float = None) -> AgentTrace:
     """
     Analyze a single transaction through the fraud detection pipeline.
     
     Args:
         transaction: Transaction to analyze
+        timeout: Optional timeout override (defaults to config.TIMEOUT_SECONDS)
         
     Returns:
         AgentTrace with all agent outputs
@@ -335,7 +410,16 @@ async def analyze_transaction(transaction: Transaction) -> AgentTrace:
     Raises:
         ValueError: If analysis fails or times out
     """
-    graph = create_fraud_detection_graph()
+    timings = {}
+    total_start = time.time()
+    
+    # Reuse graph instance (create once, reuse many times) - significant performance improvement
+    if not hasattr(analyze_transaction, '_graph'):
+        graph_create_start = time.time()
+        analyze_transaction._graph = create_fraud_detection_graph()
+        timings['graph_creation_ms'] = (time.time() - graph_create_start) * 1000
+        print(f"[PERF] Graph created in {timings['graph_creation_ms']:.0f}ms (one-time cost)")
+    graph = analyze_transaction._graph
     
     initial_state: AgentState = {
         "transaction": transaction,
@@ -346,12 +430,16 @@ async def analyze_transaction(transaction: Transaction) -> AgentTrace:
         "error": None,
     }
     
+    timeout_seconds = timeout if timeout is not None else config.TIMEOUT_SECONDS
+    
     try:
         # Execute with timeout
+        graph_start = time.time()
         final_state = await asyncio.wait_for(
             graph.ainvoke(initial_state),
-            timeout=config.TIMEOUT_SECONDS
+            timeout=timeout_seconds
         )
+        timings['graph_execution_ms'] = (time.time() - graph_start) * 1000
         
         # Check for errors
         if final_state.get("error"):
@@ -364,14 +452,32 @@ async def analyze_transaction(transaction: Transaction) -> AgentTrace:
         if not all([identity_output, behavioral_output, scoring_output]):
             raise ValueError("Incomplete agent outputs")
         
-        return AgentTrace(
+        timings['total_ms'] = (time.time() - total_start) * 1000
+        print(f"[PERF] Transaction {transaction.user_id}: total={timings['total_ms']:.0f}ms, graph_exec={timings['graph_execution_ms']:.0f}ms")
+        
+        trace = AgentTrace(
             identity_agent=identity_output,
             behavioral_agent=behavioral_output,
             scoring_agent=scoring_output
         )
         
+        # Optional trace logging
+        if config.ENABLE_TRACE_LOGGING and _trace_utils_available:
+            log_trace(
+                trace,
+                transaction_id=transaction.user_id,
+                log_file=config.TRACE_LOG_FILE if config.TRACE_LOG_FILE else None,
+                console=config.TRACE_LOG_CONSOLE
+            )
+        
+        return trace
+        
     except asyncio.TimeoutError:
-        raise ValueError(f"Analysis timed out after {config.TIMEOUT_SECONDS} seconds")
+        timings['total_ms'] = (time.time() - total_start) * 1000
+        print(f"[PERF] Transaction {transaction.user_id} TIMEOUT after {timings['total_ms']:.0f}ms")
+        raise ValueError(f"Analysis timed out after {timeout_seconds} seconds")
     except Exception as e:
+        timings['total_ms'] = (time.time() - total_start) * 1000
+        print(f"[PERF] Transaction {transaction.user_id} ERROR after {timings['total_ms']:.0f}ms: {str(e)}")
         raise ValueError(f"Analysis failed: {str(e)}")
 

@@ -81,44 +81,46 @@ async def analyze_batch(transactions: List[Transaction]):
             detail=f"Maximum {config.MAX_CONCURRENT_REQUESTS} transactions allowed per batch"
         )
     
+    # Create semaphore to limit concurrent Groq API calls (prevents rate limiting)
+    semaphore = asyncio.Semaphore(config.MAX_CONCURRENT_GROQ_REQUESTS)
+    
     results: List[BatchAnalysisResult] = []
     latencies: List[float] = []
     
-    # Process transactions concurrently
+    # Process transactions concurrently with semaphore control
     async def process_single(txn: Transaction, idx: int) -> BatchAnalysisResult:
-        start_time = time.time()
-        try:
-            trace = await analyze_transaction(txn)
-            latency_ms = (time.time() - start_time) * 1000
-            latencies.append(latency_ms)
-            
-            return BatchAnalysisResult(
-                transaction_id=str(idx),
-                fraud_score=trace.scoring_agent.fraud_score,
-                decision=trace.scoring_agent.decision,
-                latency_ms=latency_ms,
-                error=None
-            )
-        except Exception as e:
-            latency_ms = (time.time() - start_time) * 1000
-            return BatchAnalysisResult(
-                transaction_id=str(idx),
-                fraud_score=0.0,
-                decision="error",
-                latency_ms=latency_ms,
-                error=str(e)
-            )
+        async with semaphore:  # Limit concurrent API calls to avoid rate limits
+            start_time = time.time()
+            try:
+                trace = await analyze_transaction(txn, timeout=config.BATCH_TIMEOUT_SECONDS)
+                latency_ms = (time.time() - start_time) * 1000
+                latencies.append(latency_ms)
+                
+                return BatchAnalysisResult(
+                    transaction_id=str(idx),
+                    fraud_score=trace.scoring_agent.fraud_score,
+                    decision=trace.scoring_agent.decision,
+                    latency_ms=latency_ms,
+                    error=None
+                )
+            except Exception as e:
+                latency_ms = (time.time() - start_time) * 1000
+                return BatchAnalysisResult(
+                    transaction_id=str(idx),
+                    fraud_score=0.0,
+                    decision="error",
+                    latency_ms=latency_ms,
+                    error=str(e)
+                )
     
     # Create tasks for all transactions
     tasks = [process_single(txn, idx) for idx, txn in enumerate(transactions)]
     
-    # Process with asyncio.as_completed for better progress tracking
-    completed_tasks = []
-    for coro in asyncio.as_completed(tasks):
-        result = await coro
-        completed_tasks.append(result)
-    
-    results = completed_tasks
+    # Use asyncio.gather for better parallelism (more efficient than as_completed for fixed batches)
+    batch_start = time.time()
+    results = await asyncio.gather(*tasks, return_exceptions=False)
+    batch_time = (time.time() - batch_start) * 1000
+    print(f"[BATCH] Processed {len(transactions)} transactions in {batch_time:.0f}ms (avg: {batch_time/len(transactions):.0f}ms per transaction)")
     
     # Calculate statistics
     total_processed = len(results)
